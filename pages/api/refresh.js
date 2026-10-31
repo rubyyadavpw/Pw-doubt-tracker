@@ -4,7 +4,7 @@ export const config = {
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Method not allowed' });
+    return res.status(405).json({ success: false, error: 'Method not allowed' });
   }
 
   const { token } = req.body;
@@ -33,13 +33,16 @@ export default async function handler(req, res) {
     });
 
     if (!batchesRes.ok) {
-      throw new Error(`PW API Authentication Failed (Status: ${batchesRes.status}). Please check your Bearer Token.`);
+      return res.status(401).json({ 
+        success: false, 
+        error: `Invalid Bearer Token or Expired Session (API Status: ${batchesRes.status}).` 
+      });
     }
 
     const batchesData = await batchesRes.json();
 
     if (!batchesData.success) {
-      throw new Error(batchesData.message || 'Failed to fetch batch master list.');
+      return res.status(400).json({ success: false, error: batchesData.message || 'Failed to fetch batch master list.' });
     }
 
     const activeBatches = (batchesData.data || []).filter(b => 
@@ -48,7 +51,7 @@ export default async function handler(req, res) {
 
     let allPendingDoubts = [];
 
-    const batchPromises = activeBatches.map(async (batch) => {
+    await Promise.all(activeBatches.map(async (batch) => {
       try {
         const detailsRes = await fetch(`https://admin-api.penpencil.co/v3/admin/batches/${batch._id}/details`, { headers });
         const details = await detailsRes.json();
@@ -78,8 +81,7 @@ export default async function handler(req, res) {
                     chapter: d.chapterName || 'General',
                     lecture: d.lectureName || 'N/A',
                     slide: d.slideNumber || '1',
-                    doubtText: d.text || d.question || 'No description provided.',
-                    category: d.category || 'General',
+                    doubtText: d.text || d.question || 'No text provided',
                     createdAtIST: createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
                     pendingHours: parseFloat(pendingHours),
                     portalLink: `https://admin.penpencil.co/doubts/sme/${batch._id}/${subject._id}`
@@ -90,11 +92,9 @@ export default async function handler(req, res) {
           }
         }
       } catch (err) {
-        console.error(`Error processing batch ${batch.name}:`, err.message);
+        console.error(`Error in batch ${batch.name}:`, err.message);
       }
-    });
-
-    await Promise.all(batchPromises);
+    }));
 
     return res.status(200).json({
       success: true,
@@ -104,6 +104,6 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message || 'Network request failed' });
+    return res.status(500).json({ success: false, error: 'Network proxy error: ' + error.message });
   }
 }
