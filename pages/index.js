@@ -8,6 +8,7 @@ export default function Dashboard() {
   const [token, setToken] = useState('');
   const [saveToken, setSaveToken] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState('');
   const [data, setData] = useState(null);
   const [search, setSearch] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('ALL');
@@ -15,9 +16,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     const saved = localStorage.getItem('pw_sme_token');
-    if (saved) {
-      setToken(saved);
-    }
+    if (saved) setToken(saved);
   }, []);
 
   const handleRefresh = async () => {
@@ -34,24 +33,87 @@ export default function Dashboard() {
 
     setError('');
     setLoading(true);
+    setStatusText('Initiating Master Batch Scan...');
 
     try {
-      const res = await fetch('/api/refresh', {
+      // 1. Fetch Batches
+      const batchRes = await fetch('/api/refresh', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: cleanToken })
+        body: JSON.stringify({ token: cleanToken, action: 'GET_BATCHES' })
       });
-      
-      const result = await res.json();
-      if (result.success) {
-        setData(result);
-      } else {
-        setError(result.error || 'Unable to sync with PW Servers.');
+      const batchData = await batchRes.json();
+
+      if (!batchData.success) {
+        throw new Error(batchData.error || 'Failed to authenticate token.');
       }
+
+      const batches = batchData.batches || [];
+      let allPendingDoubts = [];
+
+      // 2. Scan Batch by Batch
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        setStatusText(`Scanning (${i + 1}/${batches.length}): ${batch.name}`);
+
+        const subjRes = await fetch('/api/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: cleanToken, action: 'GET_SUBJECTS', batchId: batch._id })
+        });
+        const subjData = await subjRes.json();
+
+        if (subjData.success && subjData.subjects) {
+          for (const subject of subjData.subjects) {
+            const doubtRes = await fetch('/api/refresh', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                token: cleanToken, 
+                action: 'GET_DOUBTS', 
+                batchId: batch._id, 
+                subjectId: subject._id,
+                batchSubjectId: subject.batchSubjectId 
+              })
+            });
+            const doubtData = await doubtRes.json();
+
+            if (doubtData.success && doubtData.doubts?.length > 0) {
+              const now = new Date();
+              doubtData.doubts.forEach(d => {
+                const createdAt = new Date(d.createdAt);
+                const pendingHours = ((now - createdAt) / (1000 * 60 * 60)).toFixed(1);
+
+                allPendingDoubts.push({
+                  doubtId: d._id || d.doubtId || 'N/A',
+                  batchName: batch.name,
+                  batchId: batch._id,
+                  subject: subject.name,
+                  chapter: d.chapterName || 'General',
+                  lecture: d.lectureName || 'N/A',
+                  slide: d.slideNumber || '1',
+                  doubtText: d.text || d.question || 'No description provided.',
+                  createdAtIST: createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+                  pendingHours: parseFloat(pendingHours),
+                  portalLink: `https://admin.penpencil.co/doubts/sme/${batch._id}/${subject._id}`
+                });
+              });
+            }
+          }
+        }
+      }
+
+      setData({
+        lastRefreshed: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+        totalCount: allPendingDoubts.length,
+        doubts: allPendingDoubts
+      });
+
     } catch (err) {
-      setError('Connection timeout or PW network block. Please check your Bearer Token.');
+      setError(err.message || 'Scan interrupted. Please check your token.');
     } finally {
       setLoading(false);
+      setStatusText('');
     }
   };
 
@@ -123,7 +185,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Error Banner */}
+        {/* Error Notification */}
         {error && (
           <div className="bg-rose-500/10 border border-rose-500/20 text-rose-300 p-4 rounded-xl flex items-center gap-3 text-xs backdrop-blur-md">
             <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
@@ -131,7 +193,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Loading Banner */}
+        {/* Progress Loader */}
         {loading && (
           <div className="bg-indigo-950/40 border border-indigo-500/30 p-8 rounded-2xl backdrop-blur-xl flex flex-col items-center justify-center gap-4 text-center">
             <div className="relative">
@@ -139,13 +201,13 @@ export default function Dashboard() {
               <div className="absolute inset-0 bg-indigo-500/20 blur-xl rounded-full" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-indigo-200">Scanning Active Batches & Subjects</h3>
-              <p className="text-xs text-slate-400 mt-1">Safely syncing data from PW Admin Portal...</p>
+              <h3 className="text-sm font-semibold text-indigo-200">{statusText}</h3>
+              <p className="text-xs text-slate-400 mt-1">Chunked execution prevents API timeouts...</p>
             </div>
           </div>
         )}
 
-        {/* Analytics Grid */}
+        {/* Analytics Cards */}
         {data && !loading && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-slate-900/40 border border-slate-800/80 backdrop-blur-md p-5 rounded-2xl">
@@ -278,9 +340,3 @@ export default function Dashboard() {
                 </tbody>
               </table>
             </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
