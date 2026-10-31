@@ -20,29 +20,43 @@ export default async function handler(req, res) {
     'client-id': '5eb393ee95fab7468a79d189',
     'client-type': 'ADMIN',
     'client-version': '1.0.0',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
     'Origin': 'https://admin.penpencil.co',
     'Referer': 'https://admin.penpencil.co/'
   };
 
+  const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(id);
+      return response;
+    } catch (err) {
+      clearTimeout(id);
+      throw err;
+    }
+  };
+
   try {
-    const batchesRes = await fetch('https://admin-api.penpencil.co/v3/admin/batches?page=1&limit=50', { 
-      headers,
-      cache: 'no-store'
-    });
+    const batchesRes = await fetchWithTimeout(
+      'https://admin-api.penpencil.co/v3/admin/batches?page=1&limit=30', 
+      { headers, cache: 'no-store' },
+      10000
+    );
 
     if (!batchesRes.ok) {
       return res.status(401).json({ 
         success: false, 
-        error: `Invalid Bearer Token or Expired Session (API Status: ${batchesRes.status}).` 
+        error: `Authentication failed (Status: ${batchesRes.status}). Please check your Bearer Token.` 
       });
     }
 
     const batchesData = await batchesRes.json();
 
     if (!batchesData.success) {
-      return res.status(400).json({ success: false, error: batchesData.message || 'Failed to fetch batch master list.' });
+      return res.status(400).json({ success: false, error: batchesData.message || 'Failed to fetch batches.' });
     }
 
     const activeBatches = (batchesData.data || []).filter(b => 
@@ -51,50 +65,59 @@ export default async function handler(req, res) {
 
     let allPendingDoubts = [];
 
-    await Promise.all(activeBatches.map(async (batch) => {
+    // Process batches in parallel batches to avoid IP rate limits
+    for (const batch of activeBatches) {
       try {
-        const detailsRes = await fetch(`https://admin-api.penpencil.co/v3/admin/batches/${batch._id}/details`, { headers });
+        const detailsRes = await fetchWithTimeout(
+          `https://admin-api.penpencil.co/v3/admin/batches/${batch._id}/details`, 
+          { headers },
+          6000
+        );
         const details = await detailsRes.json();
         
         if (details.success && details.data?.subjects) {
           for (const subject of details.data.subjects) {
-            const countUrl = `https://admin-api.penpencil.co/v1/admin/doubts/subject-matter-expert/batch/${batch._id}/subject/${subject._id}/get-counts?page=1&countType=CHAPTER_WISE&batchSubjectId=${subject.batchSubjectId || ''}`;
-            const countRes = await fetch(countUrl, { headers });
-            const countData = await countRes.json();
+            try {
+              const countUrl = `https://admin-api.penpencil.co/v1/admin/doubts/subject-matter-expert/batch/${batch._id}/subject/${subject._id}/get-counts?page=1&countType=CHAPTER_WISE&batchSubjectId=${subject.batchSubjectId || ''}`;
+              const countRes = await fetchWithTimeout(countUrl, { headers }, 6000);
+              const countData = await countRes.json();
 
-            if (countData.success && countData.data?.totalPending > 0) {
-              const doubtUrl = `https://admin-api.penpencil.co/v1/admin/doubts/subject-matter-expert/batch/${batch._id}/subject/${subject._id}/get-awaiting-doubts?page=1&limit=50`;
-              const doubtRes = await fetch(doubtUrl, { headers });
-              const doubtData = await doubtRes.json();
+              if (countData.success && countData.data?.totalPending > 0) {
+                const doubtUrl = `https://admin-api.penpencil.co/v1/admin/doubts/subject-matter-expert/batch/${batch._id}/subject/${subject._id}/get-awaiting-doubts?page=1&limit=50`;
+                const doubtRes = await fetchWithTimeout(doubtUrl, { headers }, 6000);
+                const doubtData = await doubtRes.json();
 
-              if (doubtData.success && doubtData.data) {
-                const now = new Date();
-                doubtData.data.forEach(d => {
-                  const createdAt = new Date(d.createdAt);
-                  const pendingHours = ((now - createdAt) / (1000 * 60 * 60)).toFixed(1);
+                if (doubtData.success && doubtData.data) {
+                  const now = new Date();
+                  doubtData.data.forEach(d => {
+                    const createdAt = new Date(d.createdAt);
+                    const pendingHours = ((now - createdAt) / (1000 * 60 * 60)).toFixed(1);
 
-                  allPendingDoubts.push({
-                    doubtId: d._id || d.doubtId || 'N/A',
-                    batchName: batch.name,
-                    batchId: batch._id,
-                    subject: subject.name,
-                    chapter: d.chapterName || 'General',
-                    lecture: d.lectureName || 'N/A',
-                    slide: d.slideNumber || '1',
-                    doubtText: d.text || d.question || 'No text provided',
-                    createdAtIST: createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-                    pendingHours: parseFloat(pendingHours),
-                    portalLink: `https://admin.penpencil.co/doubts/sme/${batch._id}/${subject._id}`
+                    allPendingDoubts.push({
+                      doubtId: d._id || d.doubtId || 'N/A',
+                      batchName: batch.name,
+                      batchId: batch._id,
+                      subject: subject.name,
+                      chapter: d.chapterName || 'General',
+                      lecture: d.lectureName || 'N/A',
+                      slide: d.slideNumber || '1',
+                      doubtText: d.text || d.question || 'No text provided',
+                      createdAtIST: createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+                      pendingHours: parseFloat(pendingHours),
+                      portalLink: `https://admin.penpencil.co/doubts/sme/${batch._id}/${subject._id}`
+                    });
                   });
-                });
+                }
               }
+            } catch (subjErr) {
+              // Ignore single subject failure and continue scanning
             }
           }
         }
       } catch (err) {
-        console.error(`Error in batch ${batch.name}:`, err.message);
+        // Continue loop if one batch times out
       }
-    }));
+    }
 
     return res.status(200).json({
       success: true,
@@ -104,6 +127,9 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    return res.status(500).json({ success: false, error: 'Network proxy error: ' + error.message });
+    return res.status(500).json({ 
+      success: false, 
+      error: 'Connection to PW API timed out. Please try syncing again or verify if your PW Portal login session is active.' 
+    });
   }
 }
