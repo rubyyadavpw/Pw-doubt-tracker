@@ -10,23 +10,36 @@ export default async function handler(req, res) {
   const { token } = req.body;
 
   if (!token) {
-    return res.status(400).json({ message: 'PW Portal Token required' });
+    return res.status(400).json({ success: false, error: 'PW Portal Token is required.' });
   }
 
+  const cleanToken = token.replace(/^Bearer\s+/i, '').trim();
+
   const headers = {
-    'Authorization': `Bearer ${token.replace(/^Bearer\s+/, '').trim()}`,
+    'Authorization': `Bearer ${cleanToken}`,
     'client-id': '5eb393ee95fab7468a79d189',
     'client-type': 'ADMIN',
     'client-version': '1.0.0',
-    'Accept': 'application/json'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Origin': 'https://admin.penpencil.co',
+    'Referer': 'https://admin.penpencil.co/'
   };
 
   try {
-    const batchesRes = await fetch('https://admin-api.penpencil.co/v3/admin/batches?page=1&limit=1000', { headers });
+    const batchesRes = await fetch('https://admin-api.penpencil.co/v3/admin/batches?page=1&limit=50', { 
+      headers,
+      cache: 'no-store'
+    });
+
+    if (!batchesRes.ok) {
+      throw new Error(`PW API Authentication Failed (Status: ${batchesRes.status}). Please check your Bearer Token.`);
+    }
+
     const batchesData = await batchesRes.json();
 
     if (!batchesData.success) {
-      throw new Error('Failed to fetch batch master list');
+      throw new Error(batchesData.message || 'Failed to fetch batch master list.');
     }
 
     const activeBatches = (batchesData.data || []).filter(b => 
@@ -58,19 +71,18 @@ export default async function handler(req, res) {
                   const pendingHours = ((now - createdAt) / (1000 * 60 * 60)).toFixed(1);
 
                   allPendingDoubts.push({
-                    doubtId: d._id || d.doubtId,
+                    doubtId: d._id || d.doubtId || 'N/A',
                     batchName: batch.name,
                     batchId: batch._id,
                     subject: subject.name,
-                    chapter: d.chapterName || 'N/A',
+                    chapter: d.chapterName || 'General',
                     lecture: d.lectureName || 'N/A',
                     slide: d.slideNumber || '1',
-                    doubtText: d.text || d.question || 'No Text',
+                    doubtText: d.text || d.question || 'No description provided.',
                     category: d.category || 'General',
                     createdAtIST: createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
                     pendingHours: parseFloat(pendingHours),
-                    portalLink: `https://admin.penpencil.co/doubts/sme/${batch._id}/${subject._id}`,
-                    lastRefreshedIST: now.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+                    portalLink: `https://admin.penpencil.co/doubts/sme/${batch._id}/${subject._id}`
                   });
                 });
               }
@@ -92,6 +104,6 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message || 'Network request failed' });
   }
 }
