@@ -8,7 +8,6 @@ export default function Dashboard() {
   const [token, setToken] = useState('');
   const [saveToken, setSaveToken] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [statusText, setStatusText] = useState('');
   const [data, setData] = useState(null);
   const [search, setSearch] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('ALL');
@@ -23,7 +22,7 @@ export default function Dashboard() {
 
   const handleRefresh = async () => {
     if (!token) {
-      setError('Please paste an active PW Bearer Token first.');
+      setError('Active PW Bearer Token required to initiate scan.');
       return;
     }
     
@@ -35,95 +34,24 @@ export default function Dashboard() {
 
     setError('');
     setLoading(true);
-    setStatusText('Connecting directly to PW Servers...');
-
-    const headers = {
-      'Authorization': `Bearer ${cleanToken}`,
-      'client-id': '5eb393ee95fab7468a79d189',
-      'client-type': 'ADMIN',
-      'client-version': '1.0.0',
-      'Accept': 'application/json, text/plain, */*'
-    };
 
     try {
-      setStatusText('Fetching active batch list...');
-      const batchesRes = await fetch('https://admin-api.penpencil.co/v3/admin/batches?page=1&limit=40', { headers });
-
-      if (!batchesRes.ok) {
-        throw new Error(`Authentication failed (Status ${batchesRes.status}). Token expire ho chuka hai, please PW Portal se naya token copy karein.`);
-      }
-
-      const batchesData = await batchesRes.json();
-      if (!batchesData.success) {
-        throw new Error(batchesData.message || 'Failed to fetch batch master list.');
-      }
-
-      const activeBatches = (batchesData.data || []).filter(b => 
-        !b.name.includes('2024') && !b.name.includes('2025')
-      );
-
-      let allPendingDoubts = [];
-      let processedCount = 0;
-
-      for (const batch of activeBatches) {
-        processedCount++;
-        setStatusText(`Scanning Batch (${processedCount}/${activeBatches.length}): ${batch.name}`);
-
-        try {
-          const detailsRes = await fetch(`https://admin-api.penpencil.co/v3/admin/batches/${batch._id}/details`, { headers });
-          const details = await detailsRes.json();
-          
-          if (details.success && details.data?.subjects) {
-            for (const subject of details.data.subjects) {
-              const countUrl = `https://admin-api.penpencil.co/v1/admin/doubts/subject-matter-expert/batch/${batch._id}/subject/${subject._id}/get-counts?page=1&countType=CHAPTER_WISE&batchSubjectId=${subject.batchSubjectId || ''}`;
-              const countRes = await fetch(countUrl, { headers });
-              const countData = await countRes.json();
-
-              if (countData.success && countData.data?.totalPending > 0) {
-                const doubtUrl = `https://admin-api.penpencil.co/v1/admin/doubts/subject-matter-expert/batch/${batch._id}/subject/${subject._id}/get-awaiting-doubts?page=1&limit=50`;
-                const doubtRes = await fetch(doubtUrl, { headers });
-                const doubtData = await doubtRes.json();
-
-                if (doubtData.success && doubtData.data) {
-                  const now = new Date();
-                  doubtData.data.forEach(d => {
-                    const createdAt = new Date(d.createdAt);
-                    const pendingHours = ((now - createdAt) / (1000 * 60 * 60)).toFixed(1);
-
-                    allPendingDoubts.push({
-                      doubtId: d._id || d.doubtId || 'N/A',
-                      batchName: batch.name,
-                      batchId: batch._id,
-                      subject: subject.name,
-                      chapter: d.chapterName || 'General',
-                      lecture: d.lectureName || 'N/A',
-                      slide: d.slideNumber || '1',
-                      doubtText: d.text || d.question || 'No description provided.',
-                      createdAtIST: createdAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-                      pendingHours: parseFloat(pendingHours),
-                      portalLink: `https://admin.penpencil.co/doubts/sme/${batch._id}/${subject._id}`
-                    });
-                  });
-                }
-              }
-            }
-          }
-        } catch (batchErr) {
-          console.warn(`Skipped batch ${batch.name}`);
-        }
-      }
-
-      setData({
-        lastRefreshed: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
-        totalCount: allPendingDoubts.length,
-        doubts: allPendingDoubts
+      const res = await fetch('/api/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: cleanToken })
       });
-
+      
+      const result = await res.json();
+      if (result.success) {
+        setData(result);
+      } else {
+        setError(result.error || 'Unable to sync with PW Servers.');
+      }
     } catch (err) {
-      setError(err.message || 'Direct network error. Please verify active VPN or Browser CORS settings.');
+      setError('Connection timeout or PW network block. Please check your Bearer Token.');
     } finally {
       setLoading(false);
-      setStatusText('');
     }
   };
 
@@ -146,7 +74,7 @@ export default function Dashboard() {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 space-y-8">
         
-        {/* Header Section */}
+        {/* Header */}
         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 bg-slate-900/60 backdrop-blur-xl p-6 rounded-2xl border border-slate-800/80 shadow-2xl">
           <div className="space-y-1">
             <div className="flex items-center gap-3">
@@ -164,7 +92,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Controls */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
             <div className="flex flex-col gap-1">
               <input 
@@ -196,7 +123,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Error Notification */}
+        {/* Error Banner */}
         {error && (
           <div className="bg-rose-500/10 border border-rose-500/20 text-rose-300 p-4 rounded-xl flex items-center gap-3 text-xs backdrop-blur-md">
             <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
@@ -204,7 +131,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Live Progress Indicator */}
+        {/* Loading Banner */}
         {loading && (
           <div className="bg-indigo-950/40 border border-indigo-500/30 p-8 rounded-2xl backdrop-blur-xl flex flex-col items-center justify-center gap-4 text-center">
             <div className="relative">
@@ -212,13 +139,13 @@ export default function Dashboard() {
               <div className="absolute inset-0 bg-indigo-500/20 blur-xl rounded-full" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-indigo-200">{statusText}</h3>
-              <p className="text-xs text-slate-400 mt-1">Direct Browser-to-PW Connection Active</p>
+              <h3 className="text-sm font-semibold text-indigo-200">Scanning Active Batches & Subjects</h3>
+              <p className="text-xs text-slate-400 mt-1">Safely syncing data from PW Admin Portal...</p>
             </div>
           </div>
         )}
 
-        {/* Analytics Cards */}
+        {/* Analytics Grid */}
         {data && !loading && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-slate-900/40 border border-slate-800/80 backdrop-blur-md p-5 rounded-2xl">
@@ -232,3 +159,128 @@ export default function Dashboard() {
               <div className="text-slate-400 text-xs font-medium flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-rose-400" /> Critical SLA (&gt;24 hrs)
               </div>
+              <div className="text-3xl font-extrabold text-rose-400 mt-3 tracking-tight">
+                {data.doubts.filter(d => d.pendingHours > 24).length}
+              </div>
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800/80 backdrop-blur-md p-5 rounded-2xl">
+              <div className="text-slate-400 text-xs font-medium flex items-center gap-2">
+                <Clock className="w-4 h-4 text-amber-400" /> Moderate Wait (12-24 hrs)
+              </div>
+              <div className="text-3xl font-extrabold text-amber-400 mt-3 tracking-tight">
+                {data.doubts.filter(d => d.pendingHours > 12 && d.pendingHours <= 24).length}
+              </div>
+            </div>
+
+            <div className="bg-slate-900/40 border border-slate-800/80 backdrop-blur-md p-5 rounded-2xl">
+              <div className="text-slate-400 text-xs font-medium flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" /> Last Refreshed
+              </div>
+              <div className="text-sm font-semibold text-emerald-400 mt-4">{data.lastRefreshed}</div>
+            </div>
+          </div>
+        )}
+
+        {/* Search & Filters */}
+        {data && !loading && (
+          <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-slate-900/40 p-4 rounded-2xl border border-slate-800/80">
+            <div className="relative w-full md:w-96">
+              <Search className="absolute left-3.5 top-3 w-4 h-4 text-slate-500" />
+              <input
+                type="text"
+                placeholder="Search batch, subject, or doubt ID..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="w-full bg-slate-950/60 border border-slate-800 focus:border-indigo-500/50 pl-10 pr-4 py-2 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none transition duration-200"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-2 md:pb-0">
+              <Filter className="w-3.5 h-3.5 text-slate-500 mr-1 shrink-0" />
+              {['ALL', 'CRITICAL', 'MODERATE', 'FRESH'].map((filter) => (
+                <button
+                  key={filter}
+                  onClick={() => setSelectedFilter(filter)}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition duration-200 shrink-0 ${
+                    selectedFilter === filter
+                      ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                      : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                  }`}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Data Table */}
+        {data && !loading && (
+          <div className="bg-slate-900/50 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-xl shadow-2xl">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-950/60 text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-800/80">
+                    <th className="py-4 px-6">Doubt ID</th>
+                    <th className="py-4 px-6">Batch Details</th>
+                    <th className="py-4 px-6">Subject / Chapter</th>
+                    <th className="py-4 px-6">Query Text</th>
+                    <th className="py-4 px-6">Wait Time</th>
+                    <th className="py-4 px-6 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/50 text-xs">
+                  {filteredDoubts.length > 0 ? (
+                    filteredDoubts.map((row) => (
+                      <tr key={row.doubtId} className="hover:bg-slate-800/30 transition duration-150">
+                        <td className="py-4 px-6 font-mono text-indigo-300 font-medium">{row.doubtId}</td>
+                        <td className="py-4 px-6">
+                          <span className="font-semibold text-slate-200 block">{row.batchName}</span>
+                        </td>
+                        <td className="py-4 px-6">
+                          <div className="font-medium text-slate-300">{row.subject}</div>
+                          <div className="text-[10px] text-slate-500 mt-0.5">{row.chapter} (Slide {row.slide})</div>
+                        </td>
+                        <td className="py-4 px-6 text-slate-400 max-w-xs truncate" title={row.doubtText}>
+                          {row.doubtText}
+                        </td>
+                        <td className="py-4 px-6">
+                          <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-semibold ${
+                            row.pendingHours > 24 
+                              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' 
+                              : row.pendingHours > 12 
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' 
+                              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                          }`}>
+                            {row.pendingHours} hrs
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-right">
+                          <a
+                            href={row.portalLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1.5 bg-indigo-600/10 hover:bg-indigo-600 text-indigo-400 hover:text-white px-3 py-1.5 rounded-lg text-[11px] font-medium border border-indigo-500/20 hover:border-transparent transition duration-200"
+                          >
+                            Solve <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="6" className="py-12 text-center text-slate-500">
+                        No pending doubts match your criteria.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
